@@ -1,4 +1,3 @@
-
 import os
 import json
 import pandas as pd
@@ -14,25 +13,36 @@ class Exporter:
     @staticmethod
     def export_all(
         leads: List[BusinessLead],
-        base_filename: str
+        run_label: str = "leads"
     ):
+        """
+        Creates a timestamped folder per run so previous
+        exports are never overwritten.
 
-        Exporter.ensure_output_directory()
+        Output structure:
+            output/
+            └── gyms_Mumbai_20250612_143022/
+                ├── leads.csv
+                ├── leads.xlsx
+                └── leads.json
+        """
 
-        Exporter.export_csv(
-            leads,
-            f"{base_filename}.csv"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        run_dir = os.path.join(
+            config.export.output_directory,
+            f"{run_label}_{timestamp}"
         )
 
-        Exporter.export_excel(
-            leads,
-            f"{base_filename}.xlsx"
-        )
+        os.makedirs(run_dir, exist_ok=True)
 
-        Exporter.export_json(
-            leads,
-            f"{base_filename}.json"
-        )
+        base = os.path.join(run_dir, "leads")
+
+        Exporter.export_csv(leads, f"{base}.csv")
+        Exporter.export_excel(leads, f"{base}.xlsx")
+        Exporter.export_json(leads, f"{base}.json")
+
+        print(f"\n[✓] Run saved to: {run_dir}")
 
     # =====================================================
     # CSV EXPORT
@@ -153,4 +163,3 @@ class Exporter:
             f"{output_dir}/"
             f"{prefix}_{timestamp}.{extension}"
         )
-
