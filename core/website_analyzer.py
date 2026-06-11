@@ -1,4 +1,3 @@
-
 import aiohttp
 import asyncio
 from bs4 import BeautifulSoup
@@ -15,9 +14,7 @@ class WebsiteAnalyzer:
         website = business.get("website")
 
         if not website:
-
             business["no_website"] = True
-
             return business
 
         result = {
@@ -33,20 +30,22 @@ class WebsiteAnalyzer:
             "youtube": ""
         }
 
+        # aiohttp requires a ClientTimeout object — a plain int crashes
+        per_site_timeout = aiohttp.ClientTimeout(total=10)
+
         try:
 
             async with session.get(
                 website,
-                timeout=10
+                timeout=per_site_timeout,
+                allow_redirects=True
             ) as response:
 
-                html = await response.text()
+                # Only read up to 2MB to avoid hanging on huge pages
+                raw = await response.content.read(2 * 1024 * 1024)
+                html = raw.decode("utf-8", errors="ignore")
 
-                soup = BeautifulSoup(
-                    html,
-                    "html.parser"
-                )
-
+                soup = BeautifulSoup(html, "html.parser")
                 html_lower = html.lower()
 
                 # ==========================================
@@ -74,10 +73,8 @@ class WebsiteAnalyzer:
 
                 if "wp-content" in html_lower:
                     result["cms"] = "wordpress"
-
                 elif "wix" in html_lower:
                     result["cms"] = "wix"
-
                 elif "shopify" in html_lower:
                     result["cms"] = "shopify"
 
@@ -85,35 +82,20 @@ class WebsiteAnalyzer:
                 # SOCIAL LINKS
                 # ==========================================
 
-                for a in soup.find_all(
-                    "a",
-                    href=True
-                ):
+                for a in soup.find_all("a", href=True):
 
                     href = a["href"]
 
-                    if (
-                        "instagram.com" in href and
-                        not result["instagram"]
-                    ):
+                    if "instagram.com" in href and not result["instagram"]:
                         result["instagram"] = href
 
-                    elif (
-                        "facebook.com" in href and
-                        not result["facebook"]
-                    ):
+                    elif "facebook.com" in href and not result["facebook"]:
                         result["facebook"] = href
 
-                    elif (
-                        "linkedin.com" in href and
-                        not result["linkedin"]
-                    ):
+                    elif "linkedin.com" in href and not result["linkedin"]:
                         result["linkedin"] = href
 
-                    elif (
-                        "youtube.com" in href and
-                        not result["youtube"]
-                    ):
+                    elif "youtube.com" in href and not result["youtube"]:
                         result["youtube"] = href
 
                 # ==========================================
@@ -132,48 +114,56 @@ class WebsiteAnalyzer:
                     for signal in outdated_signals
                 )
 
-        except Exception:
-
+        except asyncio.TimeoutError:
+            # Site took too long — treat as broken
             result["website_broken"] = True
+            print(f"    [timeout] {website}")
+
+        except Exception as e:
+            # Any other network/parse error — mark broken, never crash batch
+            result["website_broken"] = True
+            print(f"    [error] {website} — {type(e).__name__}")
 
         business.update(result)
-
         return business
 
     # =====================================================
     # ANALYZE BATCH
     # =====================================================
 
-    async def analyze_batch(
-        self,
-        businesses
-    ):
+    async def analyze_batch(self, businesses):
 
         connector = aiohttp.TCPConnector(
+            limit=20,       # max open connections
             ssl=False
         )
 
-        timeout = aiohttp.ClientTimeout(
-            total=15
-        )
+        # Session-level timeout acts as a hard ceiling per request
+        session_timeout = aiohttp.ClientTimeout(total=20)
 
         async with aiohttp.ClientSession(
             connector=connector,
-            timeout=timeout,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0"
-                )
-            }
+            timeout=session_timeout,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         ) as session:
 
             tasks = [
-                self.analyze(
-                    session,
-                    business
-                )
+                self.analyze(session, business)
                 for business in businesses
             ]
 
-            return await asyncio.gather(*tasks)
+            # return_exceptions=True means one bad site
+            # never kills the rest of the batch
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            # Replace any uncaught exceptions with the original business dict
+            cleaned = []
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    print(f"    [uncaught] {type(r).__name__}: {r}")
+                    businesses[i]["website_broken"] = True
+                    cleaned.append(businesses[i])
+                else:
+                    cleaned.append(r)
+
+            return cleaned
